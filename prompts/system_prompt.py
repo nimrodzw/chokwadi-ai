@@ -145,8 +145,17 @@ Provide your analysis in the standard Chokwadi AI format.
 """
 
 VOICE_NOTE_CONTEXT = """The following text was transcribed from a voice note sent by a Zimbabwean user. 
-The transcription may contain errors, especially for Shona or Ndebele words. 
-Please analyse the CONTENT and CLAIMS made in this voice note for credibility.
+The transcription was done by Whisper and MAY CONTAIN ERRORS, especially for Shona or Ndebele words.
+Common transcription issues to watch for:
+- Shona/Ndebele words may be phonetically misspelled or rendered as similar-sounding English words
+- Names of Zimbabwean places, people, or institutions may be garbled
+- Code-switching between Shona and English is normal in Zimbabwe
+- If the transcription seems nonsensical, try to infer the likely Shona/Ndebele meaning from phonetic similarity
+
+IMPORTANT: Despite any transcription errors, focus on analysing the MEANING, CLAIMS, and INTENT 
+of the voice note for credibility. Attempt to reconstruct the likely original message if 
+the transcription is imperfect, and note where you are uncertain.
+
 Note that voice notes are a primary vector for misinformation in Zimbabwe, 
 often shared widely on WhatsApp without verification.
 

@@ -56,13 +56,26 @@ def transcribe_voice_note(media_id: str) -> dict:
             tmp_path = tmp.name
 
         # Step 3: Transcribe with Whisper
+        # The prompt parameter guides Whisper on expected language/vocabulary
+        # This dramatically improves accuracy for Shona and Ndebele
+        shona_prompt = (
+            "Iyi i voice note muchiShona kana chiNdebele kana chiRungu. "
+            "Shona words: chokwadi, nhema, EcoCash, InnBucks, ZiG, ZIMRA, "
+            "mukana, basa, mari, hurumende, hutano, mishonga, pfungwa, "
+            "masvingo, harare, bulawayo, mutare, gweru, kwekwe, "
+            "ndapota, wakaita, zvakanaka, hapana, chii, sei, ndeipi, "
+            "masikati, mangwanani, manheru, makadii, maswera sei, "
+            "zvokwadi zvinobatsira, mhosva, nyaya, dambudziko."
+        )
+
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
         with open(tmp_path, "rb") as audio_file:
             transcription = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file,
-                response_format="verbose_json"
+                response_format="verbose_json",
+                prompt=shona_prompt,
             )
 
         return {
