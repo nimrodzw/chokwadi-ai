@@ -97,7 +97,7 @@ Format:
 ✅ *Recommendation:*
 [What the user should do]
 
-🇿🇼 _Chokwadi AI - Zvokwadi Zvinobatsira (The truth helps)_
+🇿🇼 _Chokwadi AI - Chokwadi Chisingaputsi Ukama (By Nimrodzw)_
 ---
 
 ## LANGUAGE RULES
