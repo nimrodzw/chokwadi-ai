@@ -1,16 +1,18 @@
 """
 Chokwadi AI - Main Application
-WhatsApp bot for misinformation detection in Zimbabwe.
-Deployed on Railway with Twilio WhatsApp integration.
+WhatsApp bot via Meta WhatsApp Cloud API.
+Deployed on Railway.
 """
 import os
 import re
+import json
+import httpx
 from flask import Flask, request, jsonify
-from twilio.twiml.messaging_response import MessagingResponse
 
 from config import (
-    TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
-    FLASK_PORT, FLASK_DEBUG, AI_PROVIDER,
+    WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID,
+    WHATSAPP_VERIFY_TOKEN, GRAPH_API_VERSION,
+    FLASK_PORT, FLASK_DEBUG, AI_PROVIDER, ADMIN_PHONE,
     get_active_provider, get_available_providers
 )
 from core.analyzer import analyze_text, analyze_image_with_vision
@@ -19,15 +21,57 @@ from core.link_scanner import scan_url, format_scan_results
 
 app = Flask(__name__)
 
-# ─── Runtime state (allows live switching via admin commands) ──────────────
+# ─── Runtime provider override ────────────────────────────────────────────
 _runtime_provider_override = None
 
 
 def _current_provider() -> str:
-    """Get the current effective provider, considering runtime overrides."""
     if _runtime_provider_override:
         return _runtime_provider_override
     return get_active_provider()
+
+
+# ─── WhatsApp Cloud API Helper ────────────────────────────────────────────
+
+MESSAGES_URL = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+HEADERS = {
+    "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
+    "Content-Type": "application/json",
+}
+
+
+def send_whatsapp_message(to: str, text: str):
+    """Send a text message via Meta WhatsApp Cloud API."""
+    # WhatsApp has a ~4096 char limit per message
+    chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)] if len(text) > 4000 else [text]
+
+    for chunk in chunks:
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "text",
+            "text": {"body": chunk},
+        }
+        try:
+            resp = httpx.post(MESSAGES_URL, headers=HEADERS, json=payload, timeout=30)
+            print(f"[SEND] To {to}: {resp.status_code} {resp.text[:200]}")
+            if resp.status_code != 200:
+                print(f"[SEND ERROR] {resp.text}")
+        except Exception as e:
+            print(f"[SEND ERROR] {e}")
+
+
+def mark_as_read(message_id: str):
+    """Mark a message as read (shows blue ticks)."""
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+    }
+    try:
+        httpx.post(MESSAGES_URL, headers=HEADERS, json=payload, timeout=10)
+    except Exception:
+        pass
 
 
 # ─── Messages ─────────────────────────────────────────────────────────────
@@ -64,28 +108,15 @@ Tumira message yako izvozvi! 👇
 
 GREETING_WORDS = {
     "hi", "hello", "help", "start", "menu",
-    "mauya", "salibonani", "ndeipi", "hey", "howzit",
-    "maswera sei", "makadii", "kunjani",
+    "mauya", "salibonani", "ndeipi", "hey", "heyy", "howzit",
+    "maswera sei", "makadii", "kunjani", "yo",
 }
 
 
-# ─── Admin Commands (for you to switch providers live) ─────────────────────
-
-ADMIN_PHONE = os.getenv("ADMIN_PHONE", "")  # e.g. "whatsapp:+263771841532"
-
+# ─── Admin Commands ───────────────────────────────────────────────────────
 
 def _handle_admin_command(command: str) -> str | None:
-    """
-    Process admin commands. Returns response string or None if not a command.
-
-    Commands:
-        !status    - Show current provider and available providers
-        !claude    - Switch to Anthropic Claude
-        !gpt       - Switch to OpenAI GPT
-        !auto      - Switch to auto mode (Claude first, GPT fallback)
-    """
     global _runtime_provider_override
-
     cmd = command.strip().lower()
 
     if cmd == "!status":
@@ -99,38 +130,34 @@ def _handle_admin_command(command: str) -> str | None:
             f"Active provider: *{current}*\n"
             f"Available: {', '.join(available)}"
         )
-
     elif cmd == "!claude":
         _runtime_provider_override = "anthropic"
         return "✅ Switched to *Anthropic Claude*"
-
     elif cmd == "!gpt":
         _runtime_provider_override = "openai"
         return "✅ Switched to *OpenAI GPT*"
-
     elif cmd == "!auto":
         _runtime_provider_override = None
         return "✅ Switched to *auto mode* (Claude → GPT fallback)"
-
     return None
 
 
 # ─── Content Detection ─────────────────────────────────────────────────────
 
-def detect_content_type(body: str, num_media: int, media_type: str = "") -> str:
-    """Classify the incoming message type."""
-    if num_media > 0:
-        if "audio" in media_type or "ogg" in media_type or "voice" in media_type:
-            return "voice"
-        elif "image" in media_type or "jpeg" in media_type or "png" in media_type or "webp" in media_type:
-            return "image"
-        elif "pdf" in media_type or "document" in media_type:
-            return "document"
-        return "image"  # default media → image
-
-    if re.search(r'https?://[^\s<>"{}|\\^`\[\]]+', body):
-        return "link"
-
+def detect_message_type(message: dict) -> str:
+    """Detect WhatsApp message type from the webhook payload."""
+    msg_type = message.get("type", "text")
+    if msg_type == "audio":
+        return "voice"
+    elif msg_type == "image":
+        return "image"
+    elif msg_type == "document":
+        return "document"
+    elif msg_type == "text":
+        body = message.get("text", {}).get("body", "")
+        if re.search(r'https?://[^\s<>"{}|\\^`\[\]]+', body):
+            return "link"
+        return "text"
     return "text"
 
 
@@ -140,66 +167,113 @@ def extract_urls(text: str) -> list:
 
 # ─── Webhook ───────────────────────────────────────────────────────────────
 
+@app.route("/webhook", methods=["GET"])
+def verify_webhook():
+    """Meta webhook verification (GET request)."""
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+
+    if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
+        print(f"[WEBHOOK] Verification successful")
+        return challenge, 200
+    else:
+        print(f"[WEBHOOK] Verification failed - token mismatch")
+        return "Forbidden", 403
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """Twilio WhatsApp webhook — receives messages, returns analysis."""
-    incoming_msg = request.values.get("Body", "").strip()
-    sender = request.values.get("From", "")
-    num_media = int(request.values.get("NumMedia", 0))
-    media_type = request.values.get("MediaContentType0", "") if num_media > 0 else ""
-    media_url = request.values.get("MediaUrl0", "") if num_media > 0 else ""
+    """Meta WhatsApp webhook — receives messages, processes, and responds."""
+    body = request.get_json()
+
+    if not body:
+        return jsonify({"status": "no body"}), 400
+
+    # Meta sends various webhook events; we only care about messages
+    try:
+        entries = body.get("entry", [])
+        for entry in entries:
+            changes = entry.get("changes", [])
+            for change in changes:
+                value = change.get("value", {})
+                messages = value.get("messages", [])
+
+                for message in messages:
+                    _process_message(message)
+
+    except Exception as e:
+        print(f"[ERROR] Webhook processing: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Always return 200 to Meta (otherwise they retry and you get duplicates)
+    return jsonify({"status": "ok"}), 200
+
+
+def _process_message(message: dict):
+    """Process a single incoming WhatsApp message."""
+    sender = message.get("from", "")  # Phone number like "263771841532"
+    message_id = message.get("id", "")
+    msg_type = message.get("type", "text")
+
+    # Get text body (if text message)
+    text_body = ""
+    if msg_type == "text":
+        text_body = message.get("text", {}).get("body", "").strip()
 
     print(f"\n{'='*60}")
     print(f"[IN] From: {sender}")
-    print(f"[IN] Body: {incoming_msg[:120]}")
-    print(f"[IN] Media: {num_media} ({media_type})")
+    print(f"[IN] Type: {msg_type}")
+    print(f"[IN] Body: {text_body[:120]}")
     print(f"[IN] Provider: {_current_provider()}")
     print(f"{'='*60}")
 
-    resp = MessagingResponse()
+    # Mark as read (blue ticks)
+    mark_as_read(message_id)
 
-    # --- Admin commands (only from your number) ---
-    if sender == ADMIN_PHONE and incoming_msg.startswith("!"):
-        admin_resp = _handle_admin_command(incoming_msg)
+    # --- Admin commands ---
+    if sender == ADMIN_PHONE and text_body.startswith("!"):
+        admin_resp = _handle_admin_command(text_body)
         if admin_resp:
-            resp.message(admin_resp)
-            return str(resp)
+            send_whatsapp_message(sender, admin_resp)
+            return
 
-    # --- Greetings / help ---
-    if incoming_msg.lower() in GREETING_WORDS:
-        resp.message(WELCOME_MESSAGE)
-        return str(resp)
+    # --- Greetings ---
+    if msg_type == "text" and text_body.lower() in GREETING_WORDS:
+        send_whatsapp_message(sender, WELCOME_MESSAGE)
+        return
 
-    # --- Process content ---
-    content_type = detect_content_type(incoming_msg, num_media, media_type)
+    # --- Process by content type ---
+    content_type = detect_message_type(message)
 
     try:
         if content_type == "voice":
-            response_text = _handle_voice(media_url, sender)
+            media_id = message.get("audio", {}).get("id", "")
+            response_text = _handle_voice(media_id, sender)
 
         elif content_type == "image":
-            response_text = _handle_image(media_url, sender)
+            media_id = message.get("image", {}).get("id", "")
+            response_text = _handle_image(media_id, sender)
 
         elif content_type == "link":
-            response_text = _handle_link(incoming_msg, sender)
+            response_text = _handle_link(text_body, sender)
 
         else:
-            response_text = _handle_text(incoming_msg, sender)
+            response_text = _handle_text(text_body, sender)
 
-        # WhatsApp has a ~1600 char limit per message
-        _send_response(resp, response_text)
+        send_whatsapp_message(sender, response_text)
 
     except Exception as e:
         print(f"[ERROR] {e}")
         import traceback
         traceback.print_exc()
-        resp.message(
+        send_whatsapp_message(
+            sender,
             "⚠️ Pane dambudziko rekutarisa content iyi. "
             "(There was an error processing your request. Please try again.)\n\n"
             "🇿🇼 _Chokwadi AI_"
         )
-
-    return str(resp)
 
 
 # ─── Content Handlers ──────────────────────────────────────────────────────
@@ -215,10 +289,16 @@ def _handle_text(message: str, sender: str) -> str:
     return analyze_text(message, content_type="text")
 
 
-def _handle_voice(media_url: str, sender: str) -> str:
+def _handle_voice(media_id: str, sender: str) -> str:
     print(f"[PROCESS] Voice note for {sender}")
-    twilio_auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-    result = transcribe_voice_note(media_url, twilio_auth)
+
+    if not media_id:
+        return (
+            "⚠️ Handina kukwanisa kunzwa voice note yacho. "
+            "(I couldn't process this voice note. Please try again.)"
+        )
+
+    result = transcribe_voice_note(media_id)
 
     if result.get("text"):
         print(f"[TRANSCRIBED] Lang: {result['language']} | Text: {result['text'][:150]}...")
@@ -235,15 +315,33 @@ def _handle_voice(media_url: str, sender: str) -> str:
     )
 
 
-def _handle_image(media_url: str, sender: str) -> str:
+def _handle_image(media_id: str, sender: str) -> str:
     print(f"[PROCESS] Image analysis for {sender}")
-    if not media_url:
+
+    if not media_id:
         return (
             "⚠️ Handina kukwanisa kuona mufananidzo wacho. "
             "(I couldn't access the image. Please try again.)"
         )
-    twilio_auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-    return analyze_image_with_vision(media_url, twilio_auth)
+
+    # Get the media URL from Meta, then pass to vision analyzer
+    try:
+        media_url_endpoint = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{media_id}"
+        headers = {"Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}"}
+        resp = httpx.get(media_url_endpoint, headers=headers, timeout=30)
+        resp.raise_for_status()
+        media_url = resp.json().get("url")
+
+        if media_url:
+            # Pass the download URL and auth header for the vision module
+            return analyze_image_with_vision(media_url, meta_token=WHATSAPP_ACCESS_TOKEN)
+    except Exception as e:
+        print(f"[ERROR] Image download: {e}")
+
+    return (
+        "⚠️ Handina kukwanisa kuona mufananidzo wacho. "
+        "(I couldn't access the image. Please try again.)"
+    )
 
 
 def _handle_link(message: str, sender: str) -> str:
@@ -261,16 +359,6 @@ def _handle_link(message: str, sender: str) -> str:
         f"Additional context from user: {message}"
     )
     return analyze_text(combined, content_type="link")
-
-
-def _send_response(resp: MessagingResponse, text: str):
-    """Send response, splitting into multiple messages if needed."""
-    if len(text) <= 1500:
-        resp.message(text)
-    else:
-        chunks = [text[i:i + 1500] for i in range(0, len(text), 1500)]
-        for chunk in chunks:
-            resp.message(chunk)
 
 
 # ─── Health & Info Endpoints ───────────────────────────────────────────────
@@ -298,12 +386,12 @@ if __name__ == "__main__":
     print("=" * 60)
     print("🇿🇼  CHOKWADI AI - Zvokwadi Zvinobatsira")
     print("    Multimodal Misinformation Detection for Zimbabwe")
+    print("    Powered by Meta WhatsApp Cloud API")
     print("=" * 60)
     print(f"  Provider : {_current_provider()}")
     print(f"  Available: {', '.join(get_available_providers())}")
+    print(f"  Phone ID : {WHATSAPP_PHONE_NUMBER_ID}")
     print(f"  Port     : {FLASK_PORT}")
-    print(f"  Debug    : {FLASK_DEBUG}")
-    print(f"  Admin    : {ADMIN_PHONE or 'not set'}")
     print("=" * 60)
 
     app.run(host="0.0.0.0", port=FLASK_PORT, debug=FLASK_DEBUG)

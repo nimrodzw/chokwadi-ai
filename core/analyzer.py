@@ -24,15 +24,7 @@ from prompts.system_prompt import (
 def analyze_text(content: str, content_type: str = "text") -> str:
     """
     Analyse content for misinformation using the configured AI provider.
-
-    Args:
-        content:      The text / transcription / extracted text to analyse
-        content_type: One of "text", "voice", "image", "link"
-
-    Returns:
-        Analysis response string
     """
-    # Build context-aware user message
     if content_type == "voice":
         user_message = VOICE_NOTE_CONTEXT + content
     elif content_type == "image":
@@ -46,7 +38,6 @@ def analyze_text(content: str, content_type: str = "text") -> str:
     if content_type == "link":
         system += "\n\n" + LINK_ANALYSIS_PROMPT
 
-    # Try primary provider, fallback if in auto mode
     primary = get_active_provider()
     fallback = get_fallback_provider()
 
@@ -64,7 +55,6 @@ def analyze_text(content: str, content_type: str = "text") -> str:
 
 
 def _call_provider(provider: str, system: str, user_message: str) -> str | None:
-    """Call a specific provider. Returns response text or None on failure."""
     try:
         if provider == "anthropic":
             return _call_claude(system, user_message)
@@ -101,48 +91,48 @@ def _call_openai(system: str, user_message: str) -> str:
 
 # ─── Image / Vision Analysis ──────────────────────────────────────────────
 
-def analyze_image_with_vision(image_url: str, twilio_auth: tuple | None = None) -> str:
+def analyze_image_with_vision(image_url: str, meta_token: str = None) -> str:
     """
     Analyse an image directly using vision capabilities.
 
     Args:
         image_url:   URL of the image to analyse
-        twilio_auth: Optional (sid, token) tuple for Twilio-hosted media
-
-    Returns:
-        Analysis response string
+        meta_token:  Meta WhatsApp access token for downloading media
     """
     primary = get_active_provider()
     fallback = get_fallback_provider()
 
-    result = _call_vision_provider(primary, image_url, twilio_auth)
+    result = _call_vision_provider(primary, image_url, meta_token)
     if result is not None:
         return result
 
     if fallback:
         print(f"[FALLBACK] {primary} vision failed, trying {fallback}...")
-        result = _call_vision_provider(fallback, image_url, twilio_auth)
+        result = _call_vision_provider(fallback, image_url, meta_token)
         if result is not None:
             return result
 
     return _error_response()
 
 
-def _call_vision_provider(provider: str, image_url: str, twilio_auth: tuple | None) -> str | None:
+def _call_vision_provider(provider: str, image_url: str, meta_token: str = None) -> str | None:
     try:
         if provider == "anthropic":
-            return _vision_claude(image_url, twilio_auth)
+            return _vision_claude(image_url, meta_token)
         else:
-            return _vision_openai(image_url, twilio_auth)
+            return _vision_openai(image_url, meta_token)
     except Exception as e:
         print(f"[ERROR] {provider} vision error: {e}")
         return None
 
 
-def _download_image(image_url: str, twilio_auth: tuple | None = None) -> tuple[bytes, str]:
-    """Download image bytes and detect media type."""
-    auth = twilio_auth if twilio_auth else None
-    resp = httpx.get(image_url, auth=auth, follow_redirects=True, timeout=30)
+def _download_image(image_url: str, meta_token: str = None) -> tuple[bytes, str]:
+    """Download image bytes from Meta CDN or any URL."""
+    headers = {}
+    if meta_token:
+        headers["Authorization"] = f"Bearer {meta_token}"
+
+    resp = httpx.get(image_url, headers=headers, follow_redirects=True, timeout=30)
     resp.raise_for_status()
 
     content_type = resp.headers.get("content-type", "image/jpeg")
@@ -158,8 +148,8 @@ def _download_image(image_url: str, twilio_auth: tuple | None = None) -> tuple[b
     return resp.content, media_type
 
 
-def _vision_claude(image_url: str, twilio_auth: tuple | None) -> str:
-    image_data, media_type = _download_image(image_url, twilio_auth)
+def _vision_claude(image_url: str, meta_token: str = None) -> str:
+    image_data, media_type = _download_image(image_url, meta_token)
     image_b64 = base64.standard_b64encode(image_data).decode("utf-8")
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -193,10 +183,8 @@ def _vision_claude(image_url: str, twilio_auth: tuple | None) -> str:
     return response.content[0].text
 
 
-def _vision_openai(image_url: str, twilio_auth: tuple | None) -> str:
-    # OpenAI vision can accept URLs directly, but Twilio URLs need auth
-    # so we download and send as base64 data URI
-    image_data, media_type = _download_image(image_url, twilio_auth)
+def _vision_openai(image_url: str, meta_token: str = None) -> str:
+    image_data, media_type = _download_image(image_url, meta_token)
     image_b64 = base64.standard_b64encode(image_data).decode("utf-8")
     data_uri = f"data:{media_type};base64,{image_b64}"
 
