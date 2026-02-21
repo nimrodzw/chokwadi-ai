@@ -21,8 +21,8 @@ Chokwadi AI is a WhatsApp-based tool that helps Zimbabwean youth verify suspicio
 ```
 User (WhatsApp) → Twilio API → Flask/Gunicorn (Railway) → AI Analysis → WhatsApp Response
                                       │
-                                      ├── Claude API (Anthropic) — Text + Vision
-                                      ├── GPT-4o API (OpenAI) — Text + Vision  
+                                      ├── Input
+                                      ├── Local LLM — Text + Vision  
                                       ├── Whisper API (OpenAI) — Voice transcription
                                       └── Link Scanner — Cybersecurity module
 ```
