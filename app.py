@@ -86,12 +86,11 @@ Ndiri AI inokubatsira kuziva kana zvaunoona pa internet zviri zvechokwadi kana k
 (Send me any of the following:)
 
 📝 Text message / WhatsApp forward
-🖼️ Screenshot or image
+🖼️ Screenshot or image (mupikicha)
 🎤 Voice note
 🔗 Link/URL
 
 Ndichaongorora ndikuudze kana zviri zvechokwadi! ✅
-(I'll analyse it and tell you if it's credible!)
 
 _Basa rangu (What I check):_
 • Nhau dzenhema (Fake news)
@@ -101,15 +100,14 @@ _Basa rangu (What I check):_
 • Phishing links
 
 Tumira message yako izvozvi! 👇
-(Send your message now!)
 
-🇿🇼 _Chokwadi AI - Zvokwadi Zvinobatsira (The truth helps)_
+🇿🇼 _Chokwadi AI - Chokwadi Chisingaputse ukama_
 """
 
 GREETING_WORDS = {
     "hi", "hello", "help", "start", "menu",
     "mauya", "salibonani", "ndeipi", "hey", "heyy", "howzit",
-    "maswera sei", "makadii", "kunjani", "yo",
+    "maswera sei", "makadii", "kunjani", "yo","hoyo"
 }
 
 
